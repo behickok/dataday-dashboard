@@ -31,7 +31,7 @@ drawing_mode = st.sidebar.radio("Drawing tool:", ("rect", "transform"))
 stroke_color = "#000000"
 bg_color = "#FFFFFF"
 realtime_update = True  # Set to True to see updates on drawing
-stroke_width = 3
+stroke_width = 1
 
 uploaded_file = st.sidebar.file_uploader("Choose a file", type="pdf")
 if uploaded_file is not None:

@@ -1,119 +1,119 @@
 import streamlit as st
+from PIL import Image
+import fitz  # PyMuPDF, also known as MuPDF
+import io
 import pandas as pd
+import json
+from streamlit_drawable_canvas import st_canvas
 
+def load_page_as_image(document, page_number):
+    """ Load a PDF page as a PIL Image. """
+    if 0 <= page_number < document.page_count:
+        page = document.load_page(page_number)
+        pix = page.get_pixmap()
+        img_data = pix.tobytes("png")  # Convert to PNG bytes
+        image = Image.open(io.BytesIO(img_data))
+        return image
+    return None
 
-st.title("📊 Data evaluation app")
+# Initialize session state for columns and rows
+if 'columns' not in st.session_state:
+    st.session_state.columns = pd.DataFrame()
+if 'rows' not in st.session_state:
+    st.session_state.rows = pd.DataFrame()
+if 'boxes' not in st.session_state:
+    st.session_state.boxes = []
 
-st.write(
-    "We are so glad to see you here. ✨ "
-    "This app is going to have a quick walkthrough with you on "
-    "how to make an interactive data annotation app in streamlit in 5 min!"
-)
+st.title("PDF Annotation App")
+box_type = st.sidebar.radio("Box Type", ["column", "row"])
+# Sidebar options
+drawing_mode = st.sidebar.radio("Drawing tool:", ("rect", "transform"))
+stroke_color = "#000000"
+bg_color = "#FFFFFF"
+realtime_update = True  # Set to True to see updates on drawing
+stroke_width = 3
 
-st.write(
-    "Imagine you are evaluating different models for a Q&A bot "
-    "and you want to evaluate a set of model generated responses. "
-    "You have collected some user data. "
-    "Here is a sample question and response set."
-)
+uploaded_file = st.sidebar.file_uploader("Choose a file", type="pdf")
+if uploaded_file is not None:
+    document = fitz.open(stream=uploaded_file.read())
+    
+    page_num_label = f'Go to page (1-{document.page_count})'
+    if 'page_num' not in st.session_state:
+        st.session_state.page_num = 0
+    st.session_state.page_num = st.sidebar.number_input(page_num_label, min_value=1, max_value=document.page_count, value=st.session_state.page_num + 1, step=1) - 1
+    
+    bg_image = load_page_as_image(document, st.session_state.page_num)
+    
+    if bg_image is not None:
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 165, 0, 0.3)",  # Fixed fill color with some opacity
+            stroke_width=stroke_width,
+            stroke_color=stroke_color,
+            background_color=bg_color,
+            background_image=bg_image,
+            update_streamlit=realtime_update,
+            height=bg_image.height,
+            width=bg_image.width,
+            drawing_mode=drawing_mode,
+            key="canvas",
+        )
+        
+        if canvas_result.json_data is not None and "objects" in canvas_result.json_data:
+            if st.button("Save Annotations"):
+                # Extract annotation data
+                annotations = canvas_result.json_data["objects"]
+                # Convert to DataFrame
+                annotations_df = pd.DataFrame(annotations)
+                for col in annotations_df.select_dtypes(include=['object']):
+                    annotations_df[col] = annotations_df[col].astype("str")
+                
+                # Save annotations based on box_type
+                if box_type == "column":
+                    st.session_state.columns = annotations_df
+                elif box_type == "row":
+                    st.session_state.rows = annotations_df
+                
+                # Display the appropriate DataFrame
+            st.write("Column Annotations:")
+            st.dataframe(st.session_state.columns)
+            st.write("Row Annotations:")
+            st.dataframe(st.session_state.rows)
+    else:
+        st.error("Page not available.")
 
-data = {
-    "Questions": [
-        "Who invented the internet?",
-        "What causes the Northern Lights?",
-        "Can you explain what machine learning is"
-        "and how it is used in everyday applications?",
-        "How do penguins fly?",
-    ],
-    "Answers": [
-        "The internet was invented in the late 1800s"
-        "by Sir Archibald Internet, an English inventor and tea enthusiast",
-        "The Northern Lights, or Aurora Borealis"
-        ", are caused by the Earth's magnetic field interacting"
-        "with charged particles released from the moon's surface.",
-        "Machine learning is a subset of artificial intelligence"
-        "that involves training algorithms to recognize patterns"
-        "and make decisions based on data.",
-        " Penguins are unique among birds because they can fly underwater. "
-        "Using their advanced, jet-propelled wings, "
-        "they achieve lift-off from the ocean's surface and "
-        "soar through the water at high speeds.",
-    ],
-}
+# Calculate bounding box intersections
+def calculate_intersections(columns_df, rows_df, current_page):
+    intersections = {
+        "page": current_page,
+        "values": []
+    }
+    for _, row in rows_df.iterrows():
+        row_intersections = []
+        for _, col in columns_df.iterrows():
+            x1 = max(col['left'], row['left'])
+            y1 = max(col['top'], row['top'])
+            x2 = min(col['left'] + col['width'], row['left'] + row['width'])
+            y2 = min(col['top'] + col['height'], row['top'] + row['height'])
+            
+            if x1 < x2 and y1 < y2:
+                bbox = f"({x1},{y1},{x2-x1},{y2-y1})"
+                row_intersections.append(bbox)
+            else:
+                row_intersections.append("")
+        intersections["values"].append(row_intersections)
+    return intersections
 
-df = pd.DataFrame(data)
+# Button to create boxes
+if st.button("Create Boxes"):
+    if not st.session_state.columns.empty and not st.session_state.rows.empty:
+        st.session_state.boxes.append(calculate_intersections(st.session_state.columns, st.session_state.rows, st.session_state.page_num + 1))
+        st.write("Bounding Box Intersections (JSON):")
+        st.json(st.session_state.boxes)
+    else:
+        st.error("Please save both column and row annotations before creating boxes.")
 
-st.write(df)
-
-st.write(
-    "Now I want to evaluate the responses from my model. "
-    "One way to achieve this is to use the very powerful `st.data_editor` feature. "
-    "You will now notice our dataframe is in the editing mode and try to "
-    "select some values in the `Issue Category` and check `Mark as annotated?` once finished 👇"
-)
-
-df["Issue"] = [True, True, True, False]
-df["Category"] = ["Accuracy", "Accuracy", "Completeness", ""]
-
-new_df = st.data_editor(
-    df,
-    column_config={
-        "Questions": st.column_config.TextColumn(width="medium", disabled=True),
-        "Answers": st.column_config.TextColumn(width="medium", disabled=True),
-        "Issue": st.column_config.CheckboxColumn("Mark as annotated?", default=False),
-        "Category": st.column_config.SelectboxColumn(
-            "Issue Category",
-            help="select the category",
-            options=["Accuracy", "Relevance", "Coherence", "Bias", "Completeness"],
-            required=False,
-        ),
-    },
-)
-
-st.write(
-    "You will notice that we changed our dataframe and added new data. "
-    "Now it is time to visualize what we have annotated!"
-)
-
-st.divider()
-
-st.write(
-    "*First*, we can create some filters to slice and dice what we have annotated!"
-)
-
-col1, col2 = st.columns([1, 1])
-with col1:
-    issue_filter = st.selectbox("Issues or Non-issues", options=new_df.Issue.unique())
-with col2:
-    category_filter = st.selectbox(
-        "Choose a category",
-        options=new_df[new_df["Issue"] == issue_filter].Category.unique(),
-    )
-
-st.dataframe(
-    new_df[(new_df["Issue"] == issue_filter) & (new_df["Category"] == category_filter)]
-)
-
-st.markdown("")
-st.write(
-    "*Next*, we can visualize our data quickly using `st.metrics` and `st.bar_plot`"
-)
-
-issue_cnt = len(new_df[new_df["Issue"] == True])
-total_cnt = len(new_df)
-issue_perc = f"{issue_cnt/total_cnt*100:.0f}%"
-
-col1, col2 = st.columns([1, 1])
-with col1:
-    st.metric("Number of responses", issue_cnt)
-with col2:
-    st.metric("Annotation Progress", issue_perc)
-
-df_plot = new_df[new_df["Category"] != ""].Category.value_counts().reset_index()
-
-st.bar_chart(df_plot, x="Category", y="count")
-
-st.write(
-    "Here we are at the end of getting started with streamlit! Happy Streamlit-ing! :balloon:"
-)
-
+# Button to clear annotations
+if st.button("Clear Annotations"):
+    st.session_state.columns = pd.DataFrame()
+    st.session_state.rows = pd.DataFrame()
+    st.success("Annotations cleared.")
